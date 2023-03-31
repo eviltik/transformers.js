@@ -1,5 +1,7 @@
 
 const fs = require('fs');
+const { Readable } = require('stream');
+const path = require('path');
 
 const { env } = require('./env.js');
 
@@ -125,6 +127,62 @@ function dispatchCallback(progressCallback, data) {
     if (progressCallback !== null) progressCallback(data);
 }
 
+function readdirSyncRecursive(dirPath, arrayOfFiles) {
+    files = fs.readdirSync(dirPath);
+    arrayOfFiles = arrayOfFiles || [];
+    files.forEach(file => {
+        if (fs.statSync(dirPath + "/" + file).isDirectory()) {
+            arrayOfFiles = readdirSyncRecursive(dirPath + "/" + file, arrayOfFiles)
+        } else {
+            arrayOfFiles.push(path.join(dirPath, "/", file))
+        }
+    });
+    return arrayOfFiles;
+}
+
+const caches = {
+    caches:{},
+    open:async function open(cacheName) {
+
+        if (this.caches[cacheName]) {
+            return this.caches[cacheName];
+        }
+
+        const cache = {};
+        const localPath = env.localURL.replace(/^\.\//, '');
+        cache.files = readdirSyncRecursive(localPath);
+
+        function urlToPath(str) {
+            return str.replace(/^http?s:\//, localPath);
+        }
+
+        cache.match = async function match(request) {
+            const file = urlToPath(request);
+            const fileMatch = cache.files.filter(f => f === file);
+            if (!fileMatch.length) {
+                // file not found in the cache
+                return undefined;
+            }
+
+            // file found
+            const body = new FileResponse(file);
+            return body;
+        }
+
+        cache.put = async function put(request, responseToCache) {
+            const file = urlToPath(request);
+            const writeStream = fs.createWriteStream(file);
+            const body = Readable.fromWeb(responseToCache.body);
+            fs.mkdirSync(path.dirname(file), { recursive: true });
+            body.pipe(writeStream);
+            //body.on('end', () => { console.log(file, 'written'); });
+        }
+
+        this.caches[cacheName] = cache;
+        return cache;
+    },
+}
+
 async function getModelFile(modelPath, fileName, progressCallback = null, fatal = true) {
 
     // Initiate session
@@ -147,13 +205,13 @@ async function getModelFile(modelPath, fileName, progressCallback = null, fatal 
     if (!env.useCache || (response = await cache.match(request)) === undefined) {
         // Caching not available, or model is not cached, so we perform the request
         response = await getFile(request);
-
         if (response.status === 404) {
             if (fatal) {
                 throw Error(`File not found. Could not locate "${request}".`)
             } else {
                 // File not found, but this file is optional.
                 // TODO in future, cache the response
+                cache.put(request, response);
                 return null;
             }
         }
@@ -204,14 +262,20 @@ async function fetchJSON(modelPath, fileName, progressCallback = null, fatal = t
     let decoder = new TextDecoder('utf-8');
     let jsonData = decoder.decode(buffer);
 
-    return JSON.parse(jsonData);
+    let parsed = null;
+    try {
+        parsed = JSON.parse(jsonData);
+    } catch(e) {
+        console.warn(`Can not parse json from ${fileName}`);
+    }
+    return parsed;
 }
 
 
 async function readResponse(response, progressCallback) {
     // Read and track progress when reading a Response object
-
     const contentLength = response.headers.get('Content-Length');
+
     if (contentLength === null) {
         console.warn('Unable to determine content-length from response headers. Will expand buffer when needed.')
     }
