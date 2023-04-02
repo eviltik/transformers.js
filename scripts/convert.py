@@ -81,7 +81,7 @@ class ConversionArguments:
     device: str = field(
         default='cpu',
         metadata={
-            "help": 'The device to use to do the export. Defaults to "cpu".'
+            "help": 'The device to use to do the export.'
         }
     )
     from_hub: bool = field(
@@ -197,6 +197,7 @@ def main():
 
     model = TasksManager.get_model_from_task(
         task, model_path,
+        framework='pt',
     )
 
     onnx_config_constructor = TasksManager.get_exporter_config_constructor(
@@ -230,6 +231,15 @@ def main():
         # Save tokenizer
         tokenizer = AutoTokenizer.from_pretrained(model_path)
         tokenizer.save_pretrained(output_model_folder)
+
+        # Handle special cases
+        if model.config.model_type == 'marian':
+            import json
+            from .tokenizers.marian import generate_tokenizer_json
+            tokenizer_json = generate_tokenizer_json(model_path, tokenizer)
+
+            with open(os.path.join(output_model_folder, 'tokenizer.json'), 'w', encoding='utf-8') as fp:
+                json.dump(tokenizer_json, fp)
     except KeyError:
         pass  # No Tokenizer
 
@@ -293,7 +303,8 @@ def main():
         merge_decoders(
             OUTPUT_DECODER_PATH,
             OUTPUT_DECODER_WITH_PAST_PATH,
-            save_path=OUTPUT_DECODER_MERGED_PATH
+            save_path=OUTPUT_DECODER_MERGED_PATH,
+            strict=False
         )
 
 
