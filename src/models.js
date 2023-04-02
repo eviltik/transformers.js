@@ -17,11 +17,16 @@ const {
     ForceTokensLogitsProcessor,
     ForcedBOSTokenLogitsProcessor,
     ForcedEOSTokenLogitsProcessor,
-    WhisperTimeStampLogitsProcessor
+    WhisperTimeStampLogitsProcessor,
+    NoRepeatNGramLogitsProcessor,
+    RepetitionPenaltyLogitsProcessor
 } = require("./generation.js");
 
 const { executionProviders, ONNX } = require('./backends/onnx.js');
-const { Tensor } = require('./tensor_utils');
+const {
+    Tensor,
+    cat
+} = require('./tensor_utils');
 const { InferenceSession, Tensor: ONNXTensor } = ONNX;
 
 //////////////////////////////////////////////////
@@ -48,9 +53,15 @@ async function constructSession(modelPath, fileName, progressCallback = null) {
 }
 
 async function sessionRun(session, inputs) {
-    let output = await session.run(inputs);
-    output = replaceTensors(output);
-    return output;
+    try {
+        let output = await session.run(inputs);
+        output = replaceTensors(output);
+        return output;
+    } catch (e) {
+        console.error(`An error occurred during model execution: "${e}".`);
+        console.error('Inputs given to model:', inputs);
+        throw e;
+    }
 }
 
 function replaceTensors(obj) {
@@ -397,13 +408,13 @@ class PreTrainedModel extends Callable {
         //     ));
         // }
 
-        // if (generation_config.repetition_penalty !== null && generation_config.repetition_penalty !== 1.0) {
-        //     processors.push(new RepetitionPenaltyLogitsProcessor(generation_config.repetition_penalty));
-        // }
+        if (generation_config.repetition_penalty !== null && generation_config.repetition_penalty !== 1.0) {
+            processors.push(new RepetitionPenaltyLogitsProcessor(generation_config.repetition_penalty));
+        }
 
-        // if (generation_config.no_repeat_ngram_size !== null && generation_config.no_repeat_ngram_size > 0) {
-        //     processors.push(new NoRepeatNGramLogitsProcessor(generation_config.no_repeat_ngram_size));
-        // }
+        if (generation_config.no_repeat_ngram_size !== null && generation_config.no_repeat_ngram_size > 0) {
+            processors.push(new NoRepeatNGramLogitsProcessor(generation_config.no_repeat_ngram_size));
+        }
 
         // if (generation_config.encoder_no_repeat_ngram_size !== null && generation_config.encoder_no_repeat_ngram_size > 0) {
         //     if (this.config.is_encoder_decoder) {
@@ -555,10 +566,24 @@ class PreTrainedModel extends Callable {
                 }
 
                 let output = await this.runBeam(beam);
-                logits_processor(beam.output_token_ids, output.logits)
 
-                let sampledTokens = sampler(output.logits);
+                // Logits are of the form [batch_size, out_seq_length, vocab_size]
+                // In most cases, this will be [batch_size, 1, vocab_size]
+                // So, we select the last token's logits:
+                // (equivalent to `logits = outputs.logits[:, -1, :]`)
+                let extractedLogits = [];
+                for (const batch of output.logits) {
+                    // Extract logits corresponding to the last token
+                    let lastLogits = batch.get(batch.dims[0] - 1);
 
+                    // Add back batch dimension (needed for `cat`)
+                    lastLogits.dims = [1, ...lastLogits.dims];
+                    extractedLogits.push(lastLogits)
+                }
+                let logits = cat(extractedLogits);
+                logits_processor(beam.output_token_ids, logits)
+
+                let sampledTokens = sampler(logits);
                 for (let [newTokenId, logProb] of sampledTokens) {
                     // use previous beam as a starting point
                     let newBeam = { ...beam };

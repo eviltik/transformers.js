@@ -21,7 +21,8 @@ class LogitsProcessorList extends Callable {
     }
 
     _call(input_ids, batchedLogits) {
-        // Apply logits processor to each item in the batch:
+        // NOTE: This is different from the Python code, since vanilla JS does not support vectorized operations. 
+        // As a result, we apply each processor to each item in the batch.
         for (let logits of batchedLogits) {
             // Modifies logits inplace
             this.processors.forEach(
@@ -102,8 +103,6 @@ class WhisperTimeStampLogitsProcessor extends LogitsProcessor {
             return logits;
         }
 
-        // TODO support batched inputs
-
         // timestamps have to appear in pairs, except directly before eos_token; mask logits accordingly
         const seq = input_ids.slice(this.begin_index);
         const last_was_timestamp = seq.length >= 1 && seq[seq.length - 1] >= this.timestamp_begin;
@@ -134,6 +133,93 @@ class WhisperTimeStampLogitsProcessor extends LogitsProcessor {
         return logits;
     }
 }
+
+const getNgrams = (ngramSize, prevInputIds) => {
+    const curLen = prevInputIds.length;
+    const ngrams = [];
+    for (let j = 0; j < curLen + 1 - ngramSize; ++j) {
+        const ngram = [];
+        for (let k = 0; k < ngramSize; ++k) {
+            ngram.push(prevInputIds[j + k]);
+        }
+        ngrams.push(ngram);
+    }
+    const generatedNgram = new Map();
+    for (const ngram of ngrams) {
+        const prevNgram = ngram.slice(0, ngram.length - 1);
+        const prevNgramKey = JSON.stringify(prevNgram);
+        const prevNgramValue = generatedNgram.get(prevNgramKey) ?? [];
+        prevNgramValue.push(ngram[ngram.length - 1]);
+        generatedNgram.set(prevNgramKey, prevNgramValue);
+    }
+    return generatedNgram;
+};
+
+const getGeneratedNgrams = (bannedNgrams, prevInputIds, ngramSize) => {
+    const ngramIdx = prevInputIds.slice(prevInputIds.length + 1 - ngramSize, prevInputIds.length);
+    const banned = bannedNgrams.get(JSON.stringify(ngramIdx)) ?? [];
+    return banned;
+};
+
+const calcBannedNgramTokens = (ngramSize, prevInputIds) => {
+    const bannedTokens = [];
+    if (prevInputIds.length + 1 < ngramSize) {
+        // return no banned tokens if we haven't generated no_repeat_ngram_size tokens yet
+        return bannedTokens;
+
+    } else {
+        const generatedNgrams = getNgrams(ngramSize, prevInputIds);
+
+        const bannedTokens = getGeneratedNgrams(
+            generatedNgrams,
+            prevInputIds,
+            ngramSize,
+        );
+        return bannedTokens;
+    }
+};
+
+class NoRepeatNGramLogitsProcessor extends LogitsProcessor {
+    constructor(no_repeat_ngram_size) {
+        super();
+        this.no_repeat_ngram_size = no_repeat_ngram_size;
+    }
+
+    _call(input_ids, logits) {
+        const bannedTokens = calcBannedNgramTokens(
+            this.no_repeat_ngram_size,
+            input_ids,
+        );
+
+        for (const token of bannedTokens) {
+            logits.data[token] = -Infinity;
+        }
+        return logits;
+    }
+}
+
+
+class RepetitionPenaltyLogitsProcessor extends LogitsProcessor {
+    constructor(penalty) {
+        super();
+        this.penalty = penalty;
+    }
+
+    _call(input_ids, logits) {
+        // Modify the logits corresponding to each element in `input_ids`.
+        // As a consequence, the logits corresponding to tokens that appear
+        // many times in the output will be penalised more.
+        for (const input_id of input_ids) {
+            if (logits.data[input_id] < 0) {
+                logits.data[input_id] *= this.penalty;
+            } else {
+                logits.data[input_id] /= this.penalty;
+            }
+        }
+        return logits
+    }
+}
+
 
 class GenerationConfig {
     constructor(kwargs = {}) {
@@ -205,4 +291,6 @@ module.exports = {
     ForcedEOSTokenLogitsProcessor,
     WhisperTimeStampLogitsProcessor,
     ForceTokensLogitsProcessor,
+    NoRepeatNGramLogitsProcessor,
+    RepetitionPenaltyLogitsProcessor
 };
