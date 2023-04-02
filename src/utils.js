@@ -185,6 +185,7 @@ const caches = {
 
 async function getModelFile(modelPath, fileName, progressCallback = null, fatal = true) {
 
+    console.log(modelPath);
     // Initiate session
     dispatchCallback(progressCallback, {
         status: 'initiate',
@@ -204,6 +205,7 @@ async function getModelFile(modelPath, fileName, progressCallback = null, fatal 
 
     if (!env.useCache || (response = await cache.match(request)) === undefined) {
         // Caching not available, or model is not cached, so we perform the request
+        console.log('downloading', request);
         response = await getFile(request);
         if (response.status === 404) {
             if (fatal) {

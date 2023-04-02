@@ -969,10 +969,12 @@ async function pipeline(
     }
 
     // Construct model path
+    //console.log(model);
+    //console.log(suffix);
     model = pathJoin(
         (env.remoteModels) ? env.remoteURL : env.localURL, // host prefix
         model, // model name
-        suffix, // task suffix
+        //suffix, // task suffix
     )
 
     let tokenizerClass = pipelineInfo.tokenizer;
